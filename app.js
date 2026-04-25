@@ -1,6 +1,7 @@
 const STORAGE_KEY = "crm-rafael-hanson-v1";
 const REMOTE_SETTINGS_KEY = "crm-remote-sync-v1";
 const REMOTE_LEADS_TABLE = "client_leads";
+const CLOUD_SNAPSHOT_TABLE = "app_state_snapshots";
 
 const EVENT_DEFINITIONS = {
   casamento: {
@@ -43,10 +44,19 @@ const EVENT_DEFINITIONS = {
   }
 };
 
-const DEFAULT_TEMPLATES = buildEmptyTemplates();
+const DEFAULT_TEMPLATES = buildDefaultTemplates();
+let supabaseClient = null;
+let cloudSaveTimeout = null;
+const cloudState = {
+  ready: false,
+  loading: false,
+  user: null
+};
 const uiState = {
   selectedOrderId: null,
-  orderDetailTab: "overview"
+  orderDetailTab: "overview",
+  selectedContractId: null,
+  contractFeedback: { type: "", message: "" }
 };
 
 const state = loadState();
@@ -110,6 +120,7 @@ const elements = {
   pedidoClientSelect: document.getElementById("pedido-client-select"),
   templateForm: document.getElementById("template-form"),
   templateEventType: document.getElementById("template-event-type"),
+  templateResetDefault: document.getElementById("template-reset-default"),
   financeReceberGroup: document.getElementById("finance-receber-group"),
   financeMonthWrap: document.getElementById("finance-month-wrap"),
   financeMonth: document.getElementById("finance-month"),
@@ -126,7 +137,28 @@ const elements = {
   totalContratos: document.getElementById("total-contratos"),
   proximoEvento: document.getElementById("proximo-evento"),
   proximoEventoData: document.getElementById("proximo-evento-data"),
-  recentOrders: document.getElementById("recent-orders")
+  recentOrders: document.getElementById("recent-orders"),
+  authLoginBtn: document.getElementById("auth-login-btn"),
+  authSignupBtn: document.getElementById("auth-signup-btn"),
+  authUserEmail: document.getElementById("auth-user-email"),
+  accountMenuWrap: document.getElementById("account-menu-wrap"),
+  accountMenuBtn: document.getElementById("account-menu-btn"),
+  accountMenuDropdown: document.getElementById("account-menu-dropdown"),
+  accountLogoutBtn: document.getElementById("account-logout-btn"),
+  authStatus: document.getElementById("auth-status"),
+  signupModal: document.getElementById("signup-modal"),
+  signupModalForm: document.getElementById("signup-modal-form"),
+  signupModalClose: document.getElementById("signup-modal-close"),
+  signupUsername: document.getElementById("signup-username"),
+  signupPassword: document.getElementById("signup-password"),
+  signupPasswordConfirm: document.getElementById("signup-password-confirm"),
+  signupModalFeedback: document.getElementById("signup-modal-feedback"),
+  loginModal: document.getElementById("login-modal"),
+  loginModalForm: document.getElementById("login-modal-form"),
+  loginModalClose: document.getElementById("login-modal-close"),
+  loginUsername: document.getElementById("login-username"),
+  loginPassword: document.getElementById("login-password"),
+  loginModalFeedback: document.getElementById("login-modal-feedback")
 };
 
 init();
@@ -135,6 +167,7 @@ function init() {
   populateEventTypeOptions();
   bindEvents();
   renderRemoteSyncSettings();
+  initSupabaseCloud();
   syncTemplateEditor();
   updateDynamicFields(elements.eventTypeSelect.value || "casamento");
   renderAll();
@@ -148,7 +181,7 @@ function loadState() {
       clients: parsed.clients || [],
       orders: parsed.orders || [],
       contractsGenerated: parsed.contractsGenerated || 0,
-      templates: { ...buildEmptyTemplates(), ...(parsed.templates || {}) },
+      templates: { ...buildDefaultTemplates(), ...(parsed.templates || {}) },
       importedRemoteLeadIds: parsed.importedRemoteLeadIds || []
     };
   }
@@ -162,8 +195,11 @@ function loadState() {
   };
 }
 
-function saveState() {
+function saveState(options = {}) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  if (options.syncCloud !== false) {
+    queueCloudSave();
+  }
 }
 
 function bindEvents() {
@@ -221,10 +257,384 @@ function bindEvents() {
   elements.orderEntryValue.addEventListener("change", updateInstallmentAmountDisplay);
 
   elements.templateForm.addEventListener("submit", handleTemplateSubmit);
+  elements.templateResetDefault.addEventListener("click", handleTemplateResetDefault);
   elements.financeReceberGroup.addEventListener("change", renderFinanceOverview);
   elements.financeMonth.addEventListener("change", renderFinanceOverview);
   elements.financePagarType.addEventListener("change", renderFinanceOverview);
   elements.financePagarMonth.addEventListener("change", renderFinanceOverview);
+  elements.authLoginBtn.addEventListener("click", openLoginModal);
+  elements.authSignupBtn.addEventListener("click", openSignupModal);
+  elements.accountLogoutBtn.addEventListener("click", handleAuthLogout);
+  elements.accountMenuBtn.addEventListener("click", toggleAccountMenu);
+  elements.signupModalForm.addEventListener("submit", handleSignupModalSubmit);
+  elements.signupModalClose.addEventListener("click", closeSignupModal);
+  elements.loginModalForm.addEventListener("submit", handleAuthLogin);
+  elements.loginModalClose.addEventListener("click", closeLoginModal);
+  document.addEventListener("click", handleGlobalOutsideClick);
+
+  // Compatibilidade com UI antiga: impede redirecionar para "Modelos"
+  // e sempre gera contrato automaticamente dentro do pedido.
+  document.addEventListener(
+    "click",
+    (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+
+      const explicitButton = target.closest(
+        "#create-contract-from-order-btn, #create-contract-btn, #create-order-contract-btn, [data-action='create-contract'], [data-action='create-contract-from-order']"
+      );
+
+      const genericButton = target.closest("button, a");
+      const genericLabel = (genericButton?.textContent || "").trim().toLowerCase();
+      const isLegacyCreateByText = genericButton
+        && genericLabel.includes("criar contrato")
+        && !!uiState.selectedOrderId
+        && !genericButton.closest("#view-modelos");
+
+      if (!explicitButton && !isLegacyCreateByText) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      handleCreateContractFromOrder();
+    },
+    true
+  );
+}
+
+function initSupabaseCloud() {
+  const settings = loadRemoteSyncSettings();
+  const hasSdk = typeof window.supabase !== "undefined" && typeof window.supabase.createClient === "function";
+  if (!hasSdk || !settings.supabaseUrl || !settings.supabaseAnonKey) {
+    supabaseClient = null;
+    cloudState.ready = false;
+    cloudState.user = null;
+    updateAuthUi();
+    return;
+  }
+
+  try {
+    supabaseClient = window.supabase.createClient(settings.supabaseUrl, settings.supabaseAnonKey);
+  } catch {
+    supabaseClient = null;
+    cloudState.ready = false;
+    cloudState.user = null;
+    updateAuthUi();
+    return;
+  }
+
+  cloudState.ready = true;
+  updateAuthUi();
+
+  supabaseClient.auth.getSession().then(({ data }) => {
+    cloudState.user = data?.session?.user || null;
+    updateAuthUi();
+    if (cloudState.user) {
+      ensureProfile();
+      loadStateFromCloud();
+    }
+  });
+
+  supabaseClient.auth.onAuthStateChange((_event, session) => {
+    cloudState.user = session?.user || null;
+    updateAuthUi();
+    if (cloudState.user) {
+      loadStateFromCloud();
+      ensureProfile();
+    }
+  });
+}
+
+async function handleAuthLogin(event) {
+  event?.preventDefault?.();
+  if (!supabaseClient) {
+    updateAuthStatus("Configure URL/chave do Supabase para entrar.", "error");
+    showLoginModalFeedback("Configure URL/chave do Supabase para entrar.", "error");
+    return;
+  }
+  const loginInput = String(elements.loginUsername.value || "").trim();
+  const password = String(elements.loginPassword.value || "").trim();
+  const email = loginInput.includes("@") ? loginInput : usernameToEmail(loginInput);
+  if (!loginInput || !password) {
+    updateAuthStatus("Informe usuario/e-mail e senha.", "error");
+    showLoginModalFeedback("Informe usuario/e-mail e senha.", "error");
+    return;
+  }
+  const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
+  if (error) {
+    updateAuthStatus(`Erro ao entrar: ${error.message}`, "error");
+    showLoginModalFeedback(`Erro ao entrar: ${error.message}`, "error");
+    return;
+  }
+  updateAuthStatus("Login realizado. Sincronizando dados da nuvem...", "success");
+  showLoginModalFeedback("Login realizado com sucesso.", "success");
+  hideAccountMenu();
+  setTimeout(() => {
+    closeLoginModal();
+  }, 250);
+}
+
+async function handleAuthSignup() {
+  openSignupModal();
+}
+
+function openSignupModal() {
+  elements.signupModal.classList.remove("hidden");
+  elements.signupUsername.focus();
+  showSignupModalFeedback("", "info", true);
+}
+
+function closeSignupModal() {
+  elements.signupModal.classList.add("hidden");
+  elements.signupModalForm.reset();
+  showSignupModalFeedback("", "info", true);
+}
+
+function openLoginModal() {
+  elements.loginModal.classList.remove("hidden");
+  elements.loginUsername.focus();
+  showLoginModalFeedback("", "info", true);
+}
+
+function closeLoginModal() {
+  elements.loginModal.classList.add("hidden");
+  elements.loginModalForm.reset();
+  showLoginModalFeedback("", "info", true);
+}
+
+function showLoginModalFeedback(message, type = "info", hide = false) {
+  if (hide || !message) {
+    elements.loginModalFeedback.textContent = "";
+    elements.loginModalFeedback.classList.add("hidden");
+    elements.loginModalFeedback.classList.remove("feedback-success", "feedback-error", "feedback-info");
+    return;
+  }
+  elements.loginModalFeedback.textContent = message;
+  elements.loginModalFeedback.classList.remove("hidden", "feedback-success", "feedback-error", "feedback-info");
+  if (type === "success") elements.loginModalFeedback.classList.add("feedback-success");
+  if (type === "error") elements.loginModalFeedback.classList.add("feedback-error");
+  if (type === "info") elements.loginModalFeedback.classList.add("feedback-info");
+}
+
+function toggleAccountMenu(event) {
+  event.stopPropagation();
+  const isHidden = elements.accountMenuDropdown.classList.contains("hidden");
+  elements.accountMenuDropdown.classList.toggle("hidden", !isHidden);
+}
+
+function hideAccountMenu() {
+  elements.accountMenuDropdown.classList.add("hidden");
+}
+
+function handleGlobalOutsideClick(event) {
+  if (!elements.accountMenuWrap.contains(event.target)) {
+    hideAccountMenu();
+  }
+}
+
+function usernameToEmail(usernameRaw) {
+  const username = String(usernameRaw || "").trim().toLowerCase();
+  if (username.includes("@")) return username;
+  const normalized = username
+    .replace(/[^a-z0-9._-]/g, ".")
+    .replace(/\.+/g, ".")
+    .replace(/^\.|\.$/g, "");
+  return `${normalized || "usuario"}@crm.local`;
+}
+
+function showSignupModalFeedback(message, type = "info", hide = false) {
+  if (hide || !message) {
+    elements.signupModalFeedback.textContent = "";
+    elements.signupModalFeedback.classList.add("hidden");
+    elements.signupModalFeedback.classList.remove("feedback-success", "feedback-error", "feedback-info");
+    return;
+  }
+  elements.signupModalFeedback.textContent = message;
+  elements.signupModalFeedback.classList.remove("hidden", "feedback-success", "feedback-error", "feedback-info");
+  if (type === "success") elements.signupModalFeedback.classList.add("feedback-success");
+  if (type === "error") elements.signupModalFeedback.classList.add("feedback-error");
+  if (type === "info") elements.signupModalFeedback.classList.add("feedback-info");
+}
+
+async function handleSignupModalSubmit(event) {
+  event.preventDefault();
+  if (!supabaseClient) {
+    showSignupModalFeedback("Primeiro configure URL e chave do Supabase.", "error");
+    return;
+  }
+
+  const username = String(elements.signupUsername.value || "").trim();
+  const password = String(elements.signupPassword.value || "").trim();
+  const passwordConfirm = String(elements.signupPasswordConfirm.value || "").trim();
+
+  if (!username || !password || !passwordConfirm) {
+    showSignupModalFeedback("Preencha todos os campos.", "error");
+    return;
+  }
+  if (password !== passwordConfirm) {
+    showSignupModalFeedback("A confirmacao de senha nao confere.", "error");
+    return;
+  }
+  if (password.length < 6) {
+    showSignupModalFeedback("Use uma senha com pelo menos 6 caracteres.", "error");
+    return;
+  }
+
+  const email = usernameToEmail(username);
+  showSignupModalFeedback("Criando conta...", "info");
+
+  const { error: signupError } = await supabaseClient.auth.signUp({
+    email,
+    password,
+    options: {
+      data: { full_name: username }
+    }
+  });
+
+  if (signupError) {
+    showSignupModalFeedback(`Erro ao criar conta: ${signupError.message}`, "error");
+    return;
+  }
+
+  const { error: signinError } = await supabaseClient.auth.signInWithPassword({ email, password });
+  if (signinError) {
+    showSignupModalFeedback(
+      "Conta criada. Se seu projeto exigir confirmacao de email, confirme no email antes de entrar.",
+      "info"
+    );
+    updateAuthStatus("Conta criada. Aguarde confirmacao de email (se exigido).", "info");
+    return;
+  }
+
+  elements.loginUsername.value = "";
+  elements.loginPassword.value = "";
+  updateAuthStatus("Conta criada e login realizado. Bem-vindo ao CRM.", "success");
+  showSignupModalFeedback("Conta criada com sucesso!", "success");
+  setTimeout(() => {
+    closeSignupModal();
+  }, 400);
+}
+
+async function handleAuthLogout() {
+  if (!supabaseClient) return;
+  await supabaseClient.auth.signOut();
+  hideAccountMenu();
+  updateAuthStatus("Voce saiu da conta. Modo local ativo.", "info");
+}
+
+function updateAuthUi() {
+  const connected = !!supabaseClient && cloudState.ready;
+  const user = cloudState.user;
+
+  elements.authLoginBtn.classList.toggle("hidden", !!user);
+  elements.authSignupBtn.classList.toggle("hidden", !!user);
+  elements.authUserEmail.classList.toggle("hidden", !user);
+  elements.accountMenuWrap.classList.toggle("hidden", !user);
+
+  if (user) {
+    elements.authUserEmail.textContent = user.email || "Conta conectada";
+  } else {
+    elements.authUserEmail.textContent = "";
+    hideAccountMenu();
+  }
+
+  if (!connected) {
+    updateAuthStatus("Modo local (sem conexao cloud).", "info");
+    return;
+  }
+  if (user) {
+    updateAuthStatus(`Online: ${user.email || "usuario conectado"}`, "success");
+    return;
+  }
+  updateAuthStatus("Cloud pronta. Faca login para salvar no banco.", "info");
+}
+
+function updateAuthStatus(message, type = "info") {
+  if (!elements.authStatus) return;
+  elements.authStatus.textContent = message;
+  elements.authStatus.classList.remove("ok", "err");
+  if (type === "success") elements.authStatus.classList.add("ok");
+  if (type === "error") elements.authStatus.classList.add("err");
+}
+
+async function ensureProfile() {
+  if (!supabaseClient || !cloudState.user) return;
+  const payload = {
+    id: cloudState.user.id,
+    full_name: cloudState.user.user_metadata?.full_name || cloudState.user.email || "Usuario CRM"
+  };
+  await supabaseClient.from("profiles").upsert(payload, { onConflict: "id" });
+}
+
+function queueCloudSave() {
+  if (!supabaseClient || !cloudState.user || cloudState.loading) return;
+  if (cloudSaveTimeout) clearTimeout(cloudSaveTimeout);
+  cloudSaveTimeout = setTimeout(() => {
+    saveStateToCloud();
+  }, 450);
+}
+
+async function saveStateToCloud() {
+  if (!supabaseClient || !cloudState.user || cloudState.loading) return;
+  const snapshot = {
+    owner_id: cloudState.user.id,
+    app_state: {
+      clients: state.clients || [],
+      orders: state.orders || [],
+      contractsGenerated: state.contractsGenerated || 0,
+      templates: state.templates || {},
+      importedRemoteLeadIds: state.importedRemoteLeadIds || []
+    }
+  };
+  const { error } = await supabaseClient.from(CLOUD_SNAPSHOT_TABLE).upsert(snapshot, { onConflict: "owner_id" });
+  if (error) {
+    updateAuthStatus(`Falha ao salvar na nuvem: ${error.message}`, "error");
+    return;
+  }
+  updateAuthStatus("Dados salvos na nuvem.", "success");
+}
+
+async function loadStateFromCloud() {
+  if (!supabaseClient || !cloudState.user) return;
+  cloudState.loading = true;
+  const { data, error } = await supabaseClient
+    .from(CLOUD_SNAPSHOT_TABLE)
+    .select("app_state")
+    .eq("owner_id", cloudState.user.id)
+    .maybeSingle();
+  cloudState.loading = false;
+
+  if (error && error.code !== "PGRST116") {
+    updateAuthStatus(`Falha ao carregar nuvem: ${error.message}`, "error");
+    return;
+  }
+
+  if (!data?.app_state) {
+    updateAuthStatus("Conta conectada. Sem dados cloud ainda (usando local).", "info");
+    queueCloudSave();
+    return;
+  }
+
+  const parsed = normalizeAppState(data.app_state);
+  state.clients = parsed.clients;
+  state.orders = parsed.orders;
+  state.contractsGenerated = parsed.contractsGenerated;
+  state.templates = parsed.templates;
+  state.importedRemoteLeadIds = parsed.importedRemoteLeadIds;
+  saveState({ syncCloud: false });
+  renderAll();
+  updateAuthStatus("Dados carregados da nuvem.", "success");
+}
+
+function normalizeAppState(raw) {
+  const parsed = raw || {};
+  return {
+    clients: Array.isArray(parsed.clients) ? parsed.clients : [],
+    orders: Array.isArray(parsed.orders) ? parsed.orders : [],
+    contractsGenerated: Number(parsed.contractsGenerated || 0),
+    templates: { ...buildDefaultTemplates(), ...(parsed.templates || {}) },
+    importedRemoteLeadIds: Array.isArray(parsed.importedRemoteLeadIds) ? parsed.importedRemoteLeadIds : []
+  };
 }
 
 function populateEventTypeOptions() {
@@ -273,6 +683,7 @@ function handleRemoteSaveSettings() {
   elements.remoteFormBaseUrl.value = settings.formBaseUrl;
   elements.remoteSupabaseUrl.value = settings.supabaseUrl;
   showRemoteSyncFeedback("Conexao salva.", "success");
+  initSupabaseCloud();
 }
 
 function handleRemoteGenerateFormLink() {
@@ -394,7 +805,10 @@ function findExistingClientFromLead(clientCandidate) {
 }
 
 function normalizeSupabaseUrl(rawValue) {
-  return String(rawValue || "").trim().replace(/\/+$/, "");
+  const trimmed = String(rawValue || "").trim();
+  if (!trimmed) return "";
+  const withoutTrailing = trimmed.replace(/\/+$/, "");
+  return withoutTrailing.replace(/\/rest\/v1$/i, "");
 }
 
 function normalizeFormBaseUrl(rawValue) {
@@ -487,7 +901,9 @@ function handleClientSubmit(event) {
 function handleOrderSubmit(event) {
   event.preventDefault();
   const formData = new FormData(event.currentTarget);
-  const order = Object.fromEntries(formData.entries());
+  const submitted = Object.fromEntries(formData.entries());
+  const previousOrder = submitted.id ? findById(state.orders, submitted.id) : null;
+  const order = previousOrder ? { ...previousOrder, ...submitted } : submitted;
   const isEdit = Boolean(order.id);
   order.id = order.id || createId("ord");
   order.createdAt = order.createdAt || new Date().toISOString();
@@ -514,9 +930,43 @@ function handleTemplateSubmit(event) {
   saveState();
 }
 
+function handleTemplateResetDefault() {
+  const eventType = elements.templateEventType.value || "casamento";
+  const fallback = DEFAULT_TEMPLATES[eventType] || { title: "", body: "" };
+  state.templates[eventType] = { ...fallback };
+  saveState();
+  syncTemplateEditor();
+}
+
+function getOrderMetrics(order) {
+  const total = parseCurrencyInput(order.totalValue);
+  const entry = parseCurrencyInput(order.entryValue);
+  const remaining = Math.max(total - Math.min(entry, total), 0);
+  const paymentCount = order.paymentMethod === "Boleto"
+    ? (order.boletoSchedule?.length || Number(order.boletoInstallments || 0) || 1)
+    : (order.paymentMethod ? 1 : 0);
+  return { total, entry, remaining, paymentCount };
+}
+
+function handleCreateContractFromOrder() {
+  const order = uiState.selectedOrderId ? findById(state.orders, uiState.selectedOrderId) : null;
+  if (!order) return;
+  const client = findById(state.clients, order.clientId);
+  const metrics = getOrderMetrics(order);
+  const generatedContract = createContractFromOrder(order, client, metrics);
+  if (generatedContract) {
+    uiState.selectedContractId = generatedContract.id;
+    uiState.orderDetailTab = "contracts";
+    setContractFeedback("Contrato gerado com sucesso. Pode revisar e editar antes de exportar.", "success");
+    renderAll();
+    uiState.selectedOrderId = order.id;
+    renderOrderDetailPanel();
+  }
+}
+
 function syncTemplateEditor() {
   const eventType = elements.templateEventType.value || "casamento";
-  const template = state.templates[eventType] || { title: "", body: "" };
+  const template = getTemplateForEvent(eventType);
   elements.templateForm.eventType.value = eventType;
   elements.templateForm.title.value = template.title;
   elements.templateForm.body.value = template.body;
@@ -676,7 +1126,7 @@ function renderOrderDetailPanel() {
     ? (order.boletoSchedule?.length || Number(order.boletoInstallments || 0) || 1)
     : (order.paymentMethod ? 1 : 0);
   const scheduleCount = getOrderDateValue(order) ? 1 : 0;
-  const contractCount = Number(order.contractCount || 0);
+  const contractCount = getOrderContracts(order).length;
   const costsCount = Array.isArray(order.costs) ? order.costs.length : 0;
 
   elements.orderDetailPanel.classList.remove("hidden");
@@ -691,7 +1141,7 @@ function renderOrderDetailPanel() {
 function renderDashboard() {
   elements.totalClientes.textContent = state.clients.length;
   elements.totalPedidos.textContent = state.orders.length;
-  elements.totalContratos.textContent = state.contractsGenerated;
+  elements.totalContratos.textContent = String(getTotalContractsCount());
 
   const upcoming = state.orders
     .map((order) => ({ order, dateValue: getOrderDateValue(order) }))
@@ -842,7 +1292,6 @@ function seedExampleData() {
     email: "maraisamenegatti@gmail.com",
     phone: "(55) 99999-9999",
     birthday: "",
-    rg: "10999888",
     cpf: "000.000.000-00",
     address: "Rua da Comunidade, 120",
     zip: "99999-000",
@@ -1122,17 +1571,24 @@ function openOrderForEdit(orderId) {
 function openOrderSummary(orderId) {
   uiState.selectedOrderId = orderId;
   uiState.orderDetailTab = "overview";
+  uiState.selectedContractId = null;
+  clearContractFeedback();
   renderOrderDetailPanel();
 }
 
 function closeOrderSummary() {
   uiState.selectedOrderId = null;
   uiState.orderDetailTab = "overview";
+  uiState.selectedContractId = null;
+  clearContractFeedback();
   renderOrderDetailPanel();
 }
 
 function setOrderDetailTab(tabName) {
   uiState.orderDetailTab = tabName;
+  if (tabName !== "contracts") {
+    clearContractFeedback();
+  }
   renderOrderDetailPanel();
 }
 
@@ -1292,25 +1748,179 @@ function renderOrderDetailTabContent(order, client, metrics) {
     return;
   }
 
+  const contracts = getOrderContracts(order);
+  const activeContract = getActiveContract(order);
+  const contractsListMarkup = contracts.length
+    ? contracts
+        .slice()
+        .reverse()
+        .map((contract) => `
+          <article class="stack-item ${activeContract && activeContract.id === contract.id ? "contract-item-active" : ""}">
+            <div class="stack-item-header">
+              <div>
+                <h4>${escapeHtml(contract.title || "Contrato sem titulo")}</h4>
+                <div class="meta">
+                  <span>${formatDateTime(contract.updatedAt || contract.createdAt || "") || "Sem data"}</span>
+                </div>
+              </div>
+            </div>
+            <div class="stack-item-actions">
+              <button class="mini-button" type="button" data-action="contract-select" data-contract-id="${contract.id}">Editar</button>
+              <button class="ghost-button" type="button" data-action="contract-export" data-contract-id="${contract.id}">Exportar PDF</button>
+              <button class="danger-button" type="button" data-action="contract-delete" data-contract-id="${contract.id}">Excluir</button>
+            </div>
+          </article>
+        `)
+        .join("")
+    : '<p class="helper-text">Nenhum contrato gerado para este pedido ainda.</p>';
+
+  const editorMarkup = activeContract
+    ? `
+      <label>
+        Titulo do contrato
+        <input id="contract-editor-title" value="${escapeAttribute(activeContract.title || "")}">
+      </label>
+      <label>
+        Corpo do contrato
+        <textarea id="contract-editor-body" rows="18">${escapeHtml(activeContract.body || "")}</textarea>
+      </label>
+      <div class="form-actions">
+        <button class="primary-button" type="button" id="contract-save-btn">Salvar alteracoes</button>
+        <button class="secondary-button" type="button" id="contract-export-active-btn">Exportar PDF</button>
+      </div>
+    `
+    : `
+      <div class="hint-box subtle-box">
+        Gere um contrato novo ou escolha um existente para editar manualmente antes de exportar.
+      </div>
+    `;
+
+  const feedbackClass = uiState.contractFeedback.type ? `feedback-${uiState.contractFeedback.type}` : "";
+  const feedbackMarkup = uiState.contractFeedback.message
+    ? `<p class="${feedbackClass}">${escapeHtml(uiState.contractFeedback.message)}</p>`
+    : "";
+
   elements.orderDetailInfo.innerHTML = `
-    <div class="order-detail-grid">
-      <div>
-        <h4>Contratos</h4>
-        <p><strong>Quantidade:</strong> ${order.contractCount || 0}</p>
-        <p>Crie o contrato a partir do modelo para este tipo de evento.</p>
-      </div>
-      <div>
-        <button class="primary-button" type="button" id="create-contract-from-order-btn">Criar contrato</button>
-      </div>
+    <div class="contract-manager">
+      <section class="panel">
+        <div class="panel-header">
+          <h4>Contratos do pedido</h4>
+          <span class="helper-text">${contracts.length} contrato(s)</span>
+        </div>
+        <div class="form-actions">
+          <button class="primary-button" type="button" id="create-contract-from-order-btn">Gerar contrato automatico</button>
+          <button class="secondary-button" type="button" id="open-contract-model-btn">Editar modelo base</button>
+        </div>
+        ${feedbackMarkup}
+        <div class="stack-list">${contractsListMarkup}</div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h4>Editor do contrato</h4>
+          <span class="helper-text">Ajuste clausulas antes de exportar</span>
+        </div>
+        ${editorMarkup}
+      </section>
     </div>
   `;
 
   const createContractButton = document.getElementById("create-contract-from-order-btn");
   if (createContractButton) {
     createContractButton.addEventListener("click", () => {
+      const generatedContract = createContractFromOrder(order, client, metrics);
+      if (generatedContract) {
+        uiState.selectedContractId = generatedContract.id;
+        setContractFeedback("Contrato gerado com sucesso. Pode revisar e editar antes de exportar.", "success");
+      }
+      renderAll();
+      uiState.selectedOrderId = order.id;
+      uiState.orderDetailTab = "contracts";
+      renderOrderDetailPanel();
+    });
+  }
+
+  const openModelButton = document.getElementById("open-contract-model-btn");
+  if (openModelButton) {
+    openModelButton.addEventListener("click", () => {
       elements.templateEventType.value = order.eventType || "casamento";
       syncTemplateEditor();
       showView("modelos");
+    });
+  }
+
+  elements.orderDetailInfo.querySelectorAll("[data-action='contract-select']").forEach((button) => {
+    button.addEventListener("click", () => {
+      uiState.selectedContractId = button.dataset.contractId || null;
+      clearContractFeedback();
+      renderOrderDetailPanel();
+    });
+  });
+
+  elements.orderDetailInfo.querySelectorAll("[data-action='contract-export']").forEach((button) => {
+    button.addEventListener("click", () => {
+      const contractId = button.dataset.contractId;
+      const contract = contracts.find((item) => item.id === contractId);
+      if (!contract) return;
+      const exported = exportContractToPdf(contract);
+      setContractFeedback(exported ? "Janela de impressao/PDF aberta." : "Nao foi possivel abrir o PDF. Verifique bloqueio de pop-up.", exported ? "info" : "error");
+      renderOrderDetailPanel();
+    });
+  });
+
+  elements.orderDetailInfo.querySelectorAll("[data-action='contract-delete']").forEach((button) => {
+    button.addEventListener("click", () => {
+      const contractId = button.dataset.contractId;
+      if (!contractId) return;
+      deleteOrderContract(order.id, contractId);
+      if (uiState.selectedContractId === contractId) {
+        uiState.selectedContractId = null;
+      }
+      setContractFeedback("Contrato excluido.", "info");
+      renderAll();
+      uiState.selectedOrderId = order.id;
+      uiState.orderDetailTab = "contracts";
+      renderOrderDetailPanel();
+    });
+  });
+
+  const saveContractButton = document.getElementById("contract-save-btn");
+  if (saveContractButton && activeContract) {
+    saveContractButton.addEventListener("click", () => {
+      const titleInput = document.getElementById("contract-editor-title");
+      const bodyInput = document.getElementById("contract-editor-body");
+      if (!titleInput || !bodyInput) return;
+      updateOrderContract(order.id, activeContract.id, {
+        title: titleInput.value.trim() || "Contrato sem titulo",
+        body: bodyInput.value
+      });
+      setContractFeedback("Contrato atualizado.", "success");
+      renderAll();
+      uiState.selectedOrderId = order.id;
+      uiState.orderDetailTab = "contracts";
+      uiState.selectedContractId = activeContract.id;
+      renderOrderDetailPanel();
+    });
+  }
+
+  const exportActiveButton = document.getElementById("contract-export-active-btn");
+  if (exportActiveButton && activeContract) {
+    exportActiveButton.addEventListener("click", () => {
+      const titleInput = document.getElementById("contract-editor-title");
+      const bodyInput = document.getElementById("contract-editor-body");
+      if (!titleInput || !bodyInput) return;
+      updateOrderContract(order.id, activeContract.id, {
+        title: titleInput.value.trim() || "Contrato sem titulo",
+        body: bodyInput.value
+      });
+      const updatedContract = getOrderContracts(order).find((item) => item.id === activeContract.id);
+      const exported = updatedContract ? exportContractToPdf(updatedContract) : false;
+      setContractFeedback(exported ? "Janela de impressao/PDF aberta." : "Nao foi possivel abrir o PDF. Verifique bloqueio de pop-up.", exported ? "info" : "error");
+      renderAll();
+      uiState.selectedOrderId = order.id;
+      uiState.orderDetailTab = "contracts";
+      uiState.selectedContractId = activeContract.id;
+      renderOrderDetailPanel();
     });
   }
 }
@@ -1351,6 +1961,237 @@ function removeCostFromOrder(orderId, costId) {
   renderOrderDetailPanel();
 }
 
+function setContractFeedback(message, type = "info") {
+  uiState.contractFeedback = { message, type };
+}
+
+function clearContractFeedback() {
+  uiState.contractFeedback = { message: "", type: "" };
+}
+
+function getOrderContracts(order) {
+  if (!order) return [];
+  if (!Array.isArray(order.contracts)) order.contracts = [];
+  order.contractCount = order.contracts.length;
+  return order.contracts;
+}
+
+function getTotalContractsCount() {
+  return state.orders.reduce((sum, order) => sum + getOrderContracts(order).length, 0);
+}
+
+function getActiveContract(order) {
+  const contracts = getOrderContracts(order);
+  if (!contracts.length) return null;
+  const preferred = uiState.selectedContractId
+    ? contracts.find((item) => item.id === uiState.selectedContractId)
+    : null;
+  return preferred || contracts[contracts.length - 1];
+}
+
+function createContractFromOrder(order, client, metrics) {
+  const template = getTemplateForEvent(order.eventType);
+  const fallbackBody = buildFallbackContractBody(order, client, metrics);
+  const variables = buildContractVariables(order, client, metrics);
+  const rawTitle = template.title || `Contrato - ${order.eventName || getEventLabel(order.eventType)}`;
+  const rawBody = template.body || fallbackBody;
+
+  const contract = {
+    id: createId("ctr"),
+    title: normalizeContractText(replaceVariables(rawTitle, variables)) || "Contrato sem titulo",
+    body: normalizeContractText(replaceVariables(rawBody, variables)),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+
+  const contracts = getOrderContracts(order);
+  contracts.push(contract);
+  order.contractCount = contracts.length;
+  state.contractsGenerated = getTotalContractsCount();
+  saveState();
+  return contract;
+}
+
+function updateOrderContract(orderId, contractId, updates) {
+  const order = findById(state.orders, orderId);
+  if (!order) return;
+  const contracts = getOrderContracts(order);
+  const index = contracts.findIndex((item) => item.id === contractId);
+  if (index < 0) return;
+  contracts[index] = {
+    ...contracts[index],
+    ...updates,
+    title: normalizeContractText(updates.title || contracts[index].title || "Contrato sem titulo"),
+    body: normalizeContractText(updates.body || contracts[index].body || ""),
+    updatedAt: new Date().toISOString()
+  };
+  order.contractCount = contracts.length;
+  state.contractsGenerated = getTotalContractsCount();
+  saveState();
+}
+
+function deleteOrderContract(orderId, contractId) {
+  const order = findById(state.orders, orderId);
+  if (!order) return;
+  const contracts = getOrderContracts(order);
+  order.contracts = contracts.filter((item) => item.id !== contractId);
+  order.contractCount = order.contracts.length;
+  state.contractsGenerated = getTotalContractsCount();
+  saveState();
+}
+
+function buildFallbackContractBody(order, client, metrics) {
+  const eventDateTime = getOrderDateValue(order);
+  const extra = order.extraFields || {};
+  return [
+    `CONTRATANTE: ${client ? `${client.firstName} ${client.lastName}` : "-"}`,
+    `CPF: ${client?.cpf || "-"}`,
+    "",
+    `EVENTO: ${order.eventName || "-"}`,
+    `TIPO: ${getEventLabel(order.eventType)}`,
+    `DATA: ${formatDateTime(eventDateTime) || "-"}`,
+    `LOCAL: ${extra.receptionLocation || extra.ceremonyLocation || extra.graduationLocation || extra.sessionLocation || "-"}`,
+    "",
+    `VALOR TOTAL: ${formatCurrency(metrics.total)}`,
+    `ENTRADA: ${formatCurrency(metrics.entry)}`,
+    `SALDO: ${formatCurrency(metrics.remaining)}`,
+    `PAGAMENTO: ${order.paymentMethod || "-"}`,
+    "",
+    "ITENS CONTRATADOS:",
+    order.items || "-"
+  ].join("\n");
+}
+
+function buildContractVariables(order, client, metrics) {
+  const extra = order.extraFields || {};
+  const fullName = client ? `${client.firstName || ""} ${client.lastName || ""}`.trim() : "";
+  const eventDateTimeRaw = extra.eventDateTime || extra.eventDate || "";
+  const [eventDateIso, eventTimeIso] = splitDateAndTime(eventDateTimeRaw);
+  const clientAddress = [client?.address, client?.district, client?.city].filter(Boolean).join(", ");
+  const boletoText = Array.isArray(order.boletoSchedule) && order.boletoSchedule.length
+    ? order.boletoSchedule
+        .filter((item) => item.dueDate)
+        .map((item) => `Boleto ${item.installment}: ${formatDate(item.dueDate)} - ${formatCurrency(item.amount || 0)}`)
+        .join("\n")
+    : "";
+
+  const paymentSummary = [
+    `Metodo: ${order.paymentMethod || "-"}`,
+    `Total: ${formatCurrency(metrics.total)}`,
+    `Entrada: ${formatCurrency(metrics.entry)}`,
+    `Saldo: ${formatCurrency(metrics.remaining)}`,
+    boletoText
+  ].filter(Boolean).join("\n");
+
+  const values = {
+    cliente_nome: fullName,
+    cliente_email: client?.email || "",
+    cliente_fone: client?.phone || "",
+    tipo_evento: getEventLabel(order.eventType),
+    nome_evento: order.eventName || "",
+    data_evento: formatDate(eventDateIso) || "",
+    valor_total: formatCurrency(metrics.total),
+    metodo_pagamento: order.paymentMethod || "",
+    customer_name: fullName,
+    customer_email: client?.email || "",
+    customer_mobile: client?.phone || "",
+    customer_address: clientAddress,
+    customer_zipcode: client?.zip || "",
+    customer_doc1: "",
+    customer_doc2: client?.cpf || "",
+    event_name: order.eventName || "",
+    event_date: formatDate(eventDateIso) || "",
+    event_time: eventTimeIso || extra.ceremonyTime || "",
+    event_place: extra.receptionLocation || extra.ceremonyLocation || extra.graduationLocation || extra.sessionLocation || "",
+    event_guests: extra.guestCount || order.guestCount || "",
+    order_memo: order.notes || "",
+    order_items: order.items || "",
+    order_total_amount: formatCurrency(metrics.total),
+    order_pay_sched: paymentSummary,
+    current_date: new Date().toLocaleDateString("pt-BR"),
+    company_signature: "Rafael Hanson Photography",
+    contractor1_signature: fullName,
+    city: extra.city || client?.city || "",
+    state: extra.state || "",
+    brideName: extra.brideName || "",
+    groomName: extra.groomName || "",
+    makingOfLocation: extra.makingOfLocation || "",
+    makingOfTime: extra.makingOfTime || "",
+    ceremonyLocation: extra.ceremonyLocation || "",
+    receptionLocation: extra.receptionLocation || "",
+    graduationLocation: extra.graduationLocation || "",
+    sessionLocation: extra.sessionLocation || "",
+    guestCount: extra.guestCount || order.guestCount || "",
+    bestPaymentDay: order.bestPaymentDay || ""
+  };
+
+  Object.entries(extra).forEach(([key, value]) => {
+    values[key] = value || "";
+  });
+
+  return values;
+}
+
+function splitDateAndTime(rawValue) {
+  if (!rawValue) return ["", ""];
+  if (rawValue.includes("T")) {
+    const [datePart, timePart] = rawValue.split("T");
+    return [datePart || "", (timePart || "").slice(0, 5)];
+  }
+  return [rawValue, ""];
+}
+
+function normalizeContractText(text) {
+  return String(text || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function exportContractToPdf(contract) {
+  const popup = window.open("", "_blank", "noopener,noreferrer");
+  if (!popup) return false;
+
+  const title = escapeHtml(contract.title || "Contrato");
+  const body = escapeHtml(contract.body || "").replace(/\n/g, "<br>");
+  popup.document.write(`
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+      <head>
+        <meta charset="UTF-8">
+        <title>${title}</title>
+        <style>
+          body {
+            font-family: Arial, sans-serif;
+            line-height: 1.55;
+            margin: 36px;
+            color: #111;
+          }
+          h1 {
+            font-size: 22px;
+            margin-bottom: 18px;
+          }
+          .contract-text {
+            white-space: normal;
+            font-size: 14px;
+          }
+          @media print {
+            body { margin: 18mm; }
+          }
+        </style>
+      </head>
+      <body>
+        <h1>${title}</h1>
+        <div class="contract-text">${body}</div>
+      </body>
+    </html>
+  `);
+  popup.document.close();
+  popup.focus();
+  setTimeout(() => popup.print(), 150);
+  return true;
+}
+
 function populateForm(form, data) {
   Object.entries(data).forEach(([key, value]) => {
     const field = form.elements.namedItem(key);
@@ -1378,17 +2219,141 @@ function findById(collection, id) {
 }
 
 function replaceVariables(template, variables) {
-  return template
+  const replaced = template
     .replace(/\{\{(.*?)\}\}/g, (_, key) => variables[key.trim()] || "")
     .replace(/\[(.*?)\]/g, (_, key) => variables[key.trim()] || "");
+
+  // RG nao e mais usado no contrato: removemos qualquer trecho relacionado.
+  return replaced
+    .replace(/portador\(a\)\s+da\s+carteira\s+de\s+identidade\s*n[ºo]\s*[^,;\n]*,?\s*/gi, "")
+    .replace(/\bRG\b\s*[:nºo#-]*\s*[^,;\n.]*/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+,/g, ",")
+    .replace(/,\s*,/g, ",")
+    .replace(/\(\s*\)/g, "")
+    .trim();
 }
 
-function buildEmptyTemplates() {
-  const templates = {};
-  Object.keys(EVENT_DEFINITIONS).forEach((eventType) => {
-    templates[eventType] = { title: "", body: "" };
-  });
-  return templates;
+function buildDefaultTemplates() {
+  return {
+    casamento: {
+      title: "Contrato de Prestacao de Servicos Fotografico - Casamento",
+      body: [
+        "CONTRATO DE PRODUCAO FOTOGRAFICA",
+        "",
+        "EVENTO: [event_name]",
+        "DATA: [event_date]",
+        "",
+        "Pelo presente instrumento particular de contrato de prestacao de servicos fotograficos, de um lado denominado CONTRATANTE: [customer_name], residente e domiciliado em [customer_address], [customer_zipcode], CPF [customer_doc2], telefone [customer_mobile].",
+        "De outro lado CONTRATADO: Rafael Hanson Photography.",
+        "",
+        "DADOS DO EVENTO",
+        "Local principal do evento: [event_place]",
+        "Horario principal: [event_time]",
+        "Numero de convidados: [event_guests]",
+        "",
+        "- Data e horario: {{eventDateTime}}",
+        "- Noiva: {{brideName}}",
+        "- Noivo: {{groomName}}",
+        "- Local do making of: {{makingOfLocation}}",
+        "- Horario do making of: {{makingOfTime}}",
+        "- Local da cerimonia: {{ceremonyLocation}}",
+        "- Local da recepcao: {{receptionLocation}}",
+        "- Cidade/Estado: {{city}} / {{state}}",
+        "- Convidados: [event_guests]",
+        "",
+        "1. OBJETO",
+        "Cobertura fotografica do evento contratado, com entrega conforme pacote.",
+        "",
+        "2. ITENS CONTRATADOS",
+        "[order_items]",
+        "",
+        "3. VALORES E PAGAMENTO",
+        "- Valor total: [order_total_amount]",
+        "- Metodo: {{metodo_pagamento}}",
+        "- Forma de pagamento: [order_pay_sched]",
+        "",
+        "4. OBSERVACOES",
+        "[order_memo]",
+        "",
+        "Erechim, [current_date].",
+        "",
+        "[company_signature]",
+        "[contractor1_signature]"
+      ].join("\n")
+    },
+    formatura: {
+      title: "Contrato de Prestacao de Servicos Fotografico - Formatura",
+      body: [
+        "EVENTO: [event_name]",
+        "DATA: [event_date]",
+        "",
+        "CONTRATANTE: [customer_name], CPF [customer_doc2], telefone [customer_mobile].",
+        "CONTRATADO: Rafael Hanson Photography.",
+        "",
+        "DADOS DO EVENTO",
+        "- Data e horario: {{eventDateTime}}",
+        "- Local: {{graduationLocation}}",
+        "- Making of: {{makingOfLocation}}",
+        "- Cidade/Estado: {{city}} / {{state}}",
+        "- Convidados: [event_guests]",
+        "",
+        "ITENS CONTRATADOS",
+        "[order_items]",
+        "",
+        "VALORES E PAGAMENTO",
+        "- Valor total: [order_total_amount]",
+        "- Forma de pagamento: [order_pay_sched]",
+        "",
+        "Observacoes",
+        "[order_memo]",
+        "",
+        "Erechim, [current_date]",
+        "",
+        "[company_signature]",
+        "[contractor1_signature]"
+      ].join("\n")
+    },
+    ensaio: {
+      title: "Contrato de Prestacao de Servicos Fotografico - Ensaio",
+      body: [
+        "EVENTO: [event_name]",
+        "DATA: [event_date]",
+        "",
+        "CONTRATANTE: [customer_name], CPF [customer_doc2], telefone [customer_mobile].",
+        "CONTRATADO: Rafael Hanson Photography.",
+        "",
+        "DADOS DO ENSAIO",
+        "- Data e horario: {{eventDateTime}}",
+        "- Local: {{sessionLocation}}",
+        "- Cidade/Estado: {{city}} / {{state}}",
+        "",
+        "ITENS CONTRATADOS",
+        "[order_items]",
+        "",
+        "VALORES E PAGAMENTO",
+        "- Valor total: [order_total_amount]",
+        "- Forma de pagamento: [order_pay_sched]",
+        "",
+        "Observacoes",
+        "[order_memo]",
+        "",
+        "Erechim, [current_date]",
+        "",
+        "[company_signature]",
+        "[contractor1_signature]"
+      ].join("\n")
+    }
+  };
+}
+
+function getTemplateForEvent(eventType) {
+  const fallback = DEFAULT_TEMPLATES[eventType] || { title: "", body: "" };
+  const current = state.templates[eventType] || {};
+  return {
+    title: String(current.title || "").trim() ? current.title : fallback.title,
+    body: String(current.body || "").trim() ? current.body : fallback.body
+  };
 }
 
 function getEventLabel(eventType) {

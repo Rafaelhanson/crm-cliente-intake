@@ -35,6 +35,18 @@
           <p class="eyebrow">Aplicacao pessoal</p>
           <h2 id="page-title">Dashboard</h2>
         </div>
+        <div class="auth-inline" id="auth-inline">
+          <span class="auth-status" id="auth-status">Modo local</span>
+          <button class="secondary-button" type="button" id="auth-signup-btn">Criar conta</button>
+          <button class="primary-button" type="button" id="auth-login-btn">Entrar</button>
+          <span class="auth-user-email hidden" id="auth-user-email"></span>
+          <div class="account-menu hidden" id="account-menu-wrap">
+            <button class="secondary-button" type="button" id="account-menu-btn">Conta</button>
+            <div class="account-menu-dropdown hidden" id="account-menu-dropdown">
+              <button class="danger-button" type="button" id="account-logout-btn">Sair</button>
+            </div>
+          </div>
+        </div>
       </header>
 
       <section class="view active" id="view-dashboard">
@@ -320,6 +332,7 @@
               </div>
               <div class="form-actions full-span">
                 <button class="primary-button" type="submit">Salvar modelo</button>
+                <button class="secondary-button" type="button" id="template-reset-default">Restaurar modelo padrao</button>
               </div>
             </form>
           </section>
@@ -380,6 +393,59 @@
     </main>
   </div>
 
+  <div class="signup-modal hidden" id="signup-modal">
+    <div class="signup-modal-card">
+      <div class="panel-header">
+        <h3>Criar conta</h3>
+        <button class="ghost-button" type="button" id="signup-modal-close">Fechar</button>
+      </div>
+      <p class="helper-text">Preencha os dados para criar seu acesso.</p>
+      <form id="signup-modal-form" class="form-grid">
+        <label>
+          Nome de usuario
+          <input id="signup-username" required>
+        </label>
+        <label>
+          Senha
+          <input id="signup-password" type="password" required>
+        </label>
+        <label class="full-span">
+          Confirmacao de senha
+          <input id="signup-password-confirm" type="password" required>
+        </label>
+        <div class="form-actions full-span">
+          <button class="primary-button" type="submit">Criar e entrar no CRM</button>
+        </div>
+      </form>
+      <div id="signup-modal-feedback" class="hint-box subtle-box hidden"></div>
+    </div>
+  </div>
+
+  <div class="signup-modal hidden" id="login-modal">
+    <div class="signup-modal-card">
+      <div class="panel-header">
+        <h3>Entrar</h3>
+        <button class="ghost-button" type="button" id="login-modal-close">Fechar</button>
+      </div>
+      <p class="helper-text">Use seu usuario (ou e-mail) e senha.</p>
+      <form id="login-modal-form" class="form-grid">
+        <label>
+          Usuario ou e-mail
+          <input id="login-username" required autocomplete="username">
+        </label>
+        <label>
+          Senha
+          <input id="login-password" type="password" required autocomplete="current-password">
+        </label>
+        <div class="form-actions full-span">
+          <button class="primary-button" type="submit">Entrar no CRM</button>
+        </div>
+      </form>
+      <div id="login-modal-feedback" class="hint-box subtle-box hidden"></div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="app.js"></script>
 </body>
 </html>
