@@ -2,10 +2,384 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="refresh" content="0; url=cliente-intake.html">
-  <title>Redirecionando...</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CRM Rafael Hanson</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <p>Redirecionando para o formulario...</p>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">RH</div>
+        <div>
+          <h1>Rafael Hanson</h1>
+          <p>CRM de contratos</p>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-link active" data-view="dashboard">Inicio</button>
+        <button class="nav-link" data-view="clientes">Clientes</button>
+        <button class="nav-link" data-view="pedidos">Pedidos</button>
+        <button class="nav-link" data-view="modelos">Contratos</button>
+        <button class="nav-link" data-view="financeiro">Financeiro</button>
+      </nav>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Aplicacao pessoal</p>
+          <h2 id="page-title">Dashboard</h2>
+        </div>
+      </header>
+
+      <section class="view active" id="view-dashboard">
+        <div class="stats-grid">
+          <article class="stat-card">
+            <span>Total de clientes</span>
+            <strong id="total-clientes">0</strong>
+            <small>cadastros salvos neste navegador</small>
+          </article>
+          <article class="stat-card">
+            <span>Pedidos ativos</span>
+            <strong id="total-pedidos">0</strong>
+            <small>eventos em andamento</small>
+          </article>
+          <article class="stat-card">
+            <span>Contratos gerados</span>
+            <strong id="total-contratos">0</strong>
+            <small>prontos para exportacao</small>
+          </article>
+          <article class="stat-card accent">
+            <span>Proximo evento</span>
+            <strong id="proximo-evento">Sem agenda</strong>
+            <small id="proximo-evento-data">Cadastre um pedido para ver aqui</small>
+          </article>
+        </div>
+
+        <div class="dashboard-grid">
+          <section class="panel">
+            <div class="panel-header">
+              <h3>Pedidos recentes</h3>
+            </div>
+            <div id="recent-orders" class="list-table empty-state">
+              Nenhum pedido cadastrado ainda.
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="view" id="view-clientes">
+        <div class="content-grid two-columns">
+          <section class="panel">
+            <div class="panel-header">
+              <h3>Cadastro de cliente</h3>
+              <span class="helper-text">Dados base para qualquer contrato</span>
+            </div>
+
+            <form id="cliente-form" class="form-grid">
+              <input type="hidden" name="id">
+              <label>
+                Nome
+                <input name="firstName" required>
+              </label>
+              <label>
+                Sobrenome
+                <input name="lastName" required>
+              </label>
+              <label>
+                Email
+                <input name="email" type="email">
+              </label>
+              <label>
+                Fone
+                <input name="phone">
+              </label>
+              <label>
+                CPF
+                <input name="cpf" id="client-cpf" maxlength="14" placeholder="000.000.000-00">
+                <small id="client-cpf-feedback" class="field-feedback" aria-live="polite"></small>
+              </label>
+              <label class="full-span">
+                Endereco
+                <input name="address" id="client-address">
+              </label>
+              <label>
+                CEP
+                <input name="zip" id="client-zip" maxlength="9" placeholder="00000-000">
+              </label>
+              <label>
+                Bairro
+                <input name="district" id="client-district">
+              </label>
+              <label>
+                Cidade
+                <input name="city" id="client-city">
+              </label>
+              <div class="form-actions full-span">
+                <button class="primary-button" type="submit">Salvar cliente</button>
+                <button class="secondary-button" type="button" id="cliente-reset">Limpar</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <h3>Clientes cadastrados</h3>
+              <span class="helper-text">Clique para editar ou usar em um pedido</span>
+            </div>
+
+            <div class="remote-sync-box">
+              <h4>Captacao online de clientes</h4>
+              <p class="helper-text">Use um formulario publico para o cliente preencher os dados basicos e sincronize aqui.</p>
+              <div class="form-grid">
+                <label class="full-span">
+                  URL publica do formulario (GitHub Pages)
+                  <input id="remote-form-base-url" placeholder="https://rafaelhanson.github.io/crm-cliente-intake/cliente-intake.html">
+                </label>
+                <label class="full-span">
+                  URL do projeto Supabase
+                  <input id="remote-supabase-url" placeholder="https://SEU-PROJETO.supabase.co">
+                </label>
+                <label class="full-span">
+                  Chave anon do Supabase
+                  <input id="remote-supabase-anon-key" type="password" placeholder="Cole a chave anon publica">
+                </label>
+                <div class="form-actions full-span">
+                  <button class="secondary-button" type="button" id="remote-save-settings-btn">Salvar conexao</button>
+                  <button class="secondary-button" type="button" id="remote-generate-link-btn">Gerar link do formulario</button>
+                  <button class="primary-button" type="button" id="remote-sync-btn">Sincronizar clientes online</button>
+                </div>
+                <label class="full-span">
+                  Link publico para enviar ao cliente
+                  <input id="remote-form-link" readonly placeholder="Clique em Gerar link do formulario">
+                </label>
+                <div id="remote-sync-feedback" class="hint-box subtle-box full-span hidden"></div>
+              </div>
+            </div>
+            <div id="clientes-list" class="stack-list empty-state">
+              Nenhum cliente cadastrado ainda.
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="view" id="view-pedidos">
+        <div class="content-grid">
+          <section class="panel" id="pedidos-manager-panel">
+            <div class="pedido-manager-grid">
+              <button class="primary-button pedido-create-button" type="button" id="open-order-form-btn">
+                Criar novo pedido
+              </button>
+              <div class="pedido-recent-box">
+                <h3>Pedidos recentes</h3>
+                <div id="orders-recent-list" class="stack-list empty-state">
+                  Nenhum pedido cadastrado ainda.
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel hidden" id="order-detail-panel">
+            <div class="panel-header">
+              <h3 id="order-detail-title">Resumo do pedido</h3>
+            </div>
+            <div class="order-summary-cards">
+              <article class="summary-card payment" id="summary-card-payments" role="button" tabindex="0">
+                <span>Pagamentos</span>
+                <strong id="order-summary-payments">0</strong>
+              </article>
+              <article class="summary-card schedule" id="summary-card-schedules" role="button" tabindex="0">
+                <span>Agendamentos</span>
+                <strong id="order-summary-schedules">0</strong>
+              </article>
+              <article class="summary-card contract" id="summary-card-contracts" role="button" tabindex="0">
+                <span>Contratos</span>
+                <strong id="order-summary-contracts">0</strong>
+              </article>
+              <article class="summary-card cost" id="summary-card-costs" role="button" tabindex="0">
+                <span>Custos</span>
+                <strong id="order-summary-costs">0</strong>
+              </article>
+            </div>
+            <div id="order-detail-info" class="order-detail-info"></div>
+            <div class="form-actions">
+              <button class="primary-button" type="button" id="order-edit-btn">Editar dados do pedido</button>
+              <button class="secondary-button" type="button" id="order-detail-close-btn">Fechar resumo</button>
+            </div>
+          </section>
+
+          <section class="panel hidden" id="order-form-panel">
+            <div id="pedido-feedback" class="hint-box hidden"></div>
+
+            <form id="pedido-form" class="form-grid order-form">
+              <input type="hidden" name="id">
+              <label>
+                Categoria
+                <select name="eventType" id="event-type-select"></select>
+              </label>
+              <label>
+                Cliente
+                <select name="clientId" id="pedido-client-select" required></select>
+              </label>
+              <label>
+                Nome do evento
+                <input name="eventName" required>
+              </label>
+
+              <div class="dynamic-section full-span">
+                <div class="dynamic-header">
+                  <h4>Dados do evento</h4>
+                  <p id="dynamic-description">Selecione um tipo para ver os campos especificos.</p>
+                </div>
+                <div id="dynamic-fields" class="dynamic-fields-grid"></div>
+              </div>
+
+              <div class="dynamic-section full-span">
+                <div class="dynamic-header">
+                  <h4>Financeiro</h4>
+                  <p>Preencha os dados financeiros do pedido.</p>
+                </div>
+                <div class="dynamic-fields-grid">
+                  <label>
+                    Valor total
+                    <div class="money-input">
+                      <span>R$</span>
+                      <input name="totalValue" type="number" min="0" step="0.01" id="order-total-value">
+                    </div>
+                  </label>
+                  <label>
+                    Valor de entrada
+                    <div class="money-input">
+                      <span>R$</span>
+                      <input name="entryValue" type="number" min="0" step="0.01" id="order-entry-value" value="0">
+                    </div>
+                  </label>
+                  <label>
+                    Metodo de pagamento
+                    <select name="paymentMethod" id="order-payment-method">
+                      <option value="PIX">PIX</option>
+                      <option value="Boleto">Boleto</option>
+                      <option value="Cartao">Cartao</option>
+                    </select>
+                  </label>
+                  <label>
+                    Melhor dia para pagamento
+                    <input name="bestPaymentDay" id="order-best-payment-day" placeholder="DD" maxlength="2" inputmode="numeric">
+                  </label>
+                </div>
+                <div id="boleto-extra" class="boleto-extra"></div>
+              </div>
+
+              <label class="full-span">
+                Itens contratados
+                <textarea name="items" rows="4" placeholder="Ex.: Pre wedding + Wedding day, album 30x30, cobertura da festa..."></textarea>
+              </label>
+              <label class="full-span">
+                Observacoes
+                <textarea name="notes" rows="4" placeholder="Informacoes extras, prazos, observacoes internas..."></textarea>
+              </label>
+
+              <div class="form-actions full-span">
+                <button class="primary-button" type="submit">Salvar pedido</button>
+                <button class="secondary-button" type="button" id="pedido-cancel">Cancelar</button>
+                <button class="secondary-button" type="button" id="pedido-reset">Limpar</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      </section>
+
+      <section class="view" id="view-modelos">
+        <div class="content-grid">
+          <section class="panel">
+            <div class="panel-header">
+              <h3>Modelos de contrato</h3>
+              <span class="helper-text">Textos variaveis por tipo de evento</span>
+            </div>
+
+            <form id="template-form" class="form-grid">
+              <label>
+                Tipo de evento
+                <select name="eventType" id="template-event-type"></select>
+              </label>
+              <label class="full-span">
+                Titulo do contrato
+                <input name="title" required>
+              </label>
+              <label class="full-span">
+                Corpo do contrato
+                <textarea name="body" rows="16"></textarea>
+              </label>
+              <div class="hint-box full-span">
+                Variaveis disponiveis: {{cliente_nome}}, {{cliente_email}}, {{cliente_fone}}, {{tipo_evento}}, {{nome_evento}}, {{data_evento}}, {{valor_total}}, {{metodo_pagamento}} e todos os campos extras do evento. Tambem funciona com placeholders no formato [customer_name], [event_date] e similares.
+              </div>
+              <div class="form-actions full-span">
+                <button class="primary-button" type="submit">Salvar modelo</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      </section>
+
+      <section class="view" id="view-financeiro">
+        <div class="content-grid two-columns">
+          <section class="panel">
+            <div class="panel-header">
+              <h3>A receber</h3>
+              <div class="finance-controls">
+                <label>
+                  Visao
+                  <select id="finance-receber-group">
+                    <option value="mes">Por mes</option>
+                    <option value="evento">Por evento</option>
+                  </select>
+                </label>
+                <label id="finance-month-wrap">
+                  Mes
+                  <input type="month" id="finance-month">
+                </label>
+              </div>
+            </div>
+            <div id="finance-receber-summary" class="hint-box"></div>
+            <div id="finance-receber-year-total" class="hint-box subtle-box"></div>
+            <div id="finance-receber-list" class="stack-list empty-state">Nenhum recebimento encontrado.</div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <h3>A pagar</h3>
+              <div class="finance-controls">
+                <label>
+                  Tipo de custo
+                  <select id="finance-pagar-type">
+                    <option value="todos">Todos</option>
+                    <option value="Combustivel">Combustivel</option>
+                    <option value="Alimentacao">Alimentacao</option>
+                    <option value="Hospedagem">Hospedagem</option>
+                    <option value="Albuns">Albuns</option>
+                    <option value="Encadernados">Encadernados</option>
+                  </select>
+                </label>
+                <label>
+                  Mes
+                  <input type="month" id="finance-pagar-month">
+                </label>
+              </div>
+            </div>
+            <div id="finance-pagar-summary" class="hint-box">Sem lancamentos de contas a pagar no momento.</div>
+            <div id="finance-pagar-year-total" class="hint-box subtle-box"></div>
+            <div id="finance-pagar-list" class="stack-list empty-state">Nenhuma despesa cadastrada.</div>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
 </body>
 </html>

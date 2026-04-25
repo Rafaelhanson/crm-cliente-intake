@@ -72,16 +72,28 @@ form.addEventListener("submit", async (event) => {
 
   try {
     const endpoint = `${supabaseUrl}/rest/v1/${leadsTable}`;
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        apikey: supabaseAnonKey,
-        Authorization: `Bearer ${supabaseAnonKey}`,
-        Prefer: "return=representation"
-      },
-      body: JSON.stringify(payload)
-    });
+    let response;
+    try {
+      response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: supabaseAnonKey,
+          Authorization: `Bearer ${supabaseAnonKey}`,
+          Prefer: "return=representation"
+        },
+        body: JSON.stringify(payload)
+      });
+    } catch {
+      const fallbackEndpoint = `${endpoint}?apikey=${encodeURIComponent(supabaseAnonKey)}`;
+      response = await fetch(fallbackEndpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload)
+      });
+    }
 
     if (!response.ok) {
       throw new Error(`Erro ${response.status}`);
