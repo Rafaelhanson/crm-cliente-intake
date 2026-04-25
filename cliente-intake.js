@@ -1,6 +1,7 @@
 const params = new URLSearchParams(window.location.search);
-const supabaseUrl = String(params.get("supabaseUrl") || "").trim().replace(/\/+$/, "");
-const supabaseAnonKey = String(params.get("supabaseAnonKey") || "").trim();
+const runtimeConfig = window.CRM_INTAKE_CONFIG || {};
+const supabaseUrl = String(params.get("supabaseUrl") || runtimeConfig.supabaseUrl || "").trim().replace(/\/+$/, "");
+const supabaseAnonKey = String(params.get("supabaseAnonKey") || runtimeConfig.supabaseAnonKey || "").trim();
 const leadsTable = "client_leads";
 
 const form = document.getElementById("intake-form");
@@ -72,19 +73,17 @@ form.addEventListener("submit", async (event) => {
 
   try {
     const endpoint = `${supabaseUrl}/rest/v1/${leadsTable}`;
-    let response;
-    try {
-      response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          apikey: supabaseAnonKey,
-          Authorization: `Bearer ${supabaseAnonKey}`,
-          Prefer: "return=representation"
-        },
-        body: JSON.stringify(payload)
-      });
-    } catch {
+    let response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...buildSupabaseHeaders(supabaseAnonKey),
+        Prefer: "return=representation"
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
       const fallbackEndpoint = `${endpoint}?apikey=${encodeURIComponent(supabaseAnonKey)}`;
       response = await fetch(fallbackEndpoint, {
         method: "POST",
@@ -110,4 +109,14 @@ function showFeedback(message, type) {
   feedback.textContent = message;
   feedback.classList.remove("ok", "err");
   if (type) feedback.classList.add(type);
+}
+
+function buildSupabaseHeaders(apiKey) {
+  const cleaned = String(apiKey || "").trim();
+  const headers = { apikey: cleaned };
+  if (cleaned.startsWith("sb_publishable_")) {
+    return headers;
+  }
+  headers.Authorization = `Bearer ${cleaned}`;
+  return headers;
 }

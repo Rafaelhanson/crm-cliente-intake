@@ -316,20 +316,14 @@ async function handleRemoteSyncClients() {
 
   try {
     const endpoint = `${settings.supabaseUrl}/rest/v1/${REMOTE_LEADS_TABLE}?select=id,created_at,first_name,last_name,email,phone,cpf,address,zip,district,city&order=created_at.asc`;
-    let response;
-    try {
-      response = await fetch(endpoint, {
-        method: "GET",
-        headers: {
-          apikey: settings.supabaseAnonKey,
-          Authorization: `Bearer ${settings.supabaseAnonKey}`
-        }
-      });
-    } catch {
+    let response = await fetch(endpoint, {
+      method: "GET",
+      headers: buildSupabaseHeaders(settings.supabaseAnonKey)
+    });
+
+    if (!response.ok) {
       const fallbackUrl = `${endpoint}&apikey=${encodeURIComponent(settings.supabaseAnonKey)}`;
-      response = await fetch(fallbackUrl, {
-        method: "GET"
-      });
+      response = await fetch(fallbackUrl, { method: "GET" });
     }
 
     if (!response.ok) {
@@ -405,6 +399,16 @@ function normalizeSupabaseUrl(rawValue) {
 
 function normalizeFormBaseUrl(rawValue) {
   return String(rawValue || "").trim().replace(/\/+$/, "");
+}
+
+function buildSupabaseHeaders(apiKey) {
+  const cleaned = String(apiKey || "").trim();
+  const headers = { apikey: cleaned };
+  if (cleaned.startsWith("sb_publishable_")) {
+    return headers;
+  }
+  headers.Authorization = `Bearer ${cleaned}`;
+  return headers;
 }
 
 function buildRemoteFormLink(settings) {
