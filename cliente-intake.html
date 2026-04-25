@@ -49,6 +49,20 @@
       font-size: 28px;
     }
 
+    .brand {
+      display: grid;
+      justify-items: center;
+      gap: 12px;
+      text-align: center;
+    }
+
+    .brand img {
+      width: min(220px, 68vw);
+      height: auto;
+      object-fit: contain;
+      filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.35));
+    }
+
     p {
       margin: 0;
       color: var(--muted);
@@ -123,8 +137,11 @@
 </head>
 <body>
   <main class="shell">
-    <h1>Cadastro de cliente</h1>
-    <p>Preencha seus dados basicos. O restante do pedido sera finalizado internamente.</p>
+    <section class="brand">
+      <img src="assets/logo-rafael.png" alt="Logo Rafael Hanson Photography">
+      <h1>Cadastro de cliente</h1>
+      <p>Olá, muito obrigado por nos escolher. Aqui vamos registrar lindas memórias para que daqui a um tempo você veja isso e você consiga reviver. Boas-vindas.</p>
+    </section>
 
     <form id="intake-form" class="grid">
       <label>
